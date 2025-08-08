@@ -7,144 +7,159 @@ import {
   TouchableOpacity,
   Alert,
   ScrollView,
-  Image
+  Image,
+  Animated
 } from 'react-native';
 import {
   getAllDownloads,
   pauseDownload,
   resumeDownload,
   removeDownload,
-  type DownloadItem
+  addDownloadProgressListener,
+  removeDownloadProgressListener,
+  onDownloadProgressChanged,
+  type DownloadItem,
+  type DownloadProgressChange
 } from 'react-native-tpstreams';
 import { useFocusEffect } from '@react-navigation/native';
 
-const DownloadScreen = () => {
+const DownloadScreen = ({ navigation }: { navigation: any }) => {
   const [downloads, setDownloads] = useState<DownloadItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isInitializing, setIsInitializing] = useState(true);
+  const pulseAnim = useState(new Animated.Value(1))[0];
   
-  // Load downloads when the screen comes into focus
-  useFocusEffect(
-    React.useCallback(() => {
-      loadDownloads();
-    }, [])
-  );
-
-  // Initial load
   useEffect(() => {
-    loadDownloads();
+    let subscription: any = null;
+    
+    const setupProgressListener = async () => {
+      try {
+        await addDownloadProgressListener();
+        
+        subscription = onDownloadProgressChanged((downloads: DownloadProgressChange[]) => {
+          setDownloads(downloads);
+          setIsLoading(false);
+          setIsInitializing(false);
+        });
+        
+        await loadDownloads();
+        
+      } catch (error) {
+        console.error('[DownloadScreen] Failed to setup progress listener:', error);
+        setIsInitializing(false);
+        setIsLoading(false);
+        
+        await loadDownloads();
+      }
+    };
+
+    setupProgressListener();
+
+    return () => {
+      if (subscription) {
+        subscription.remove();
+      }
+      removeDownloadProgressListener();
+    };
   }, []);
 
+  useEffect(() => {
+    if (!isInitializing && !isLoading) {
+      const pulseAnimation = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 0.3,
+            duration: 1000,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 1000,
+            useNativeDriver: true,
+          }),
+        ])
+      );
+      
+      pulseAnimation.start();
+      
+      return () => pulseAnimation.stop();
+    }
+  }, [isInitializing, isLoading, pulseAnim]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      if (!isInitializing) {
+        loadDownloads();
+      }
+    }, [isInitializing])
+  );
+
   const loadDownloads = async () => {
+    if (isLoading) return;
+    
     setIsLoading(true);
     try {
       const items = await getAllDownloads();
       setDownloads(items);
     } catch (error) {
-      console.error('Failed to load downloads:', error);
+      console.error('[DownloadScreen] Failed to load downloads:', error);
       Alert.alert('Error', 'Failed to load downloads');
     } finally {
       setIsLoading(false);
+      setIsInitializing(false);
     }
   };
 
   const handlePauseDownload = async (videoId: string) => {
     try {
-      // Update UI immediately
-      setDownloads(prevDownloads => 
-        prevDownloads.map(item => 
-          item.videoId === videoId 
-            ? { ...item, state: 'Paused' } 
-            : item
-        )
-      );
-      
-      // Then perform the actual pause operation
       await pauseDownload(videoId);
     } catch (error) {
-      console.error(`Error pausing download for video ID: ${videoId}`, error);
+      console.error(`[DownloadScreen] Error pausing download for video ID: ${videoId}`, error);
       Alert.alert('Error', 'Failed to pause download');
-      
-      // Revert UI on error
-      loadDownloads();
     }
   };
 
   const handleResumeDownload = async (videoId: string) => {
     try {
-      // Update UI immediately
-      setDownloads(prevDownloads => 
-        prevDownloads.map(item => 
-          item.videoId === videoId 
-            ? { ...item, state: 'Downloading' } 
-            : item
-        )
-      );
       
-      // Get all currently downloading items
       const currentDownloads = downloads.filter(item => 
         item.state === 'Downloading' && item.videoId !== videoId
       );
       
-      // Pause all other active downloads first
       if (currentDownloads.length > 0) {
-        // Update UI for other downloads
-        setDownloads(prevDownloads => 
-          prevDownloads.map(item => {
-            if (currentDownloads.some(d => d.videoId === item.videoId)) {
-              return { ...item, state: 'Paused' };
-            }
-            return item;
-          })
-        );
-        
         for (const download of currentDownloads) {
           await pauseDownload(download.videoId);
         }
       }
       
-      // Resume the requested download
       await resumeDownload(videoId);
       
-      // Resume other downloads that were paused
+
       if (currentDownloads.length > 0) {
         for (const download of currentDownloads) {
           await resumeDownload(download.videoId);
-          
-          // Update UI for each resumed download
-          setDownloads(prevDownloads => 
-            prevDownloads.map(item => 
-              item.videoId === download.videoId
-                ? { ...item, state: 'Downloading' }
-                : item
-            )
-          );
         }
       }
     } catch (error) {
-      console.error(`Error resuming download for video ID: ${videoId}`, error);
+      console.error(`[DownloadScreen] Error resuming download for video ID: ${videoId}`, error);
       Alert.alert('Error', 'Failed to resume download');
-      
-      // Revert UI on error
-      loadDownloads();
     }
   };
 
   const handleRemoveDownload = async (videoId: string) => {
     try {
-      // Update UI immediately
-      setDownloads(prevDownloads => 
-        prevDownloads.filter(item => item.videoId !== videoId)
-      );
-      
-      // Then perform the actual remove operation
       await removeDownload(videoId);
     } catch (error) {
-      console.error(`Error removing download for video ID: ${videoId}`, error);
+      console.error(`[DownloadScreen] Error removing download for video ID: ${videoId}`, error);
       Alert.alert('Error', 'Failed to remove download');
-      
-      // Refresh to get actual state on error
-      loadDownloads();
     }
+  };
+
+  const handlePlayVideo = (videoId: string, title?: string) => {
+    navigation.navigate('Home', {
+      videoId,
+      title: title || 'Video Player',
+    });
   };
 
   const renderDownloadItem = (item: DownloadItem) => {
@@ -198,6 +213,15 @@ const DownloadScreen = () => {
         </View>
         
         <View style={styles.buttonContainer}>
+          {isCompleted && (
+            <TouchableOpacity 
+              style={styles.playButton}
+              onPress={() => handlePlayVideo(videoId, item.title)}
+            >
+              <Text style={styles.playButtonText}>Play</Text>
+            </TouchableOpacity>
+          )}
+          
           {!isCompleted && (
             <>
               {item.state === 'Downloading' && (
@@ -236,7 +260,12 @@ const DownloadScreen = () => {
       style={styles.scrollView} 
       contentContainerStyle={styles.scrollViewContent}
     >
-      {isLoading ? (
+      {isInitializing ? (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#007AFF" />
+          <Text style={styles.loadingText}>Setting up download monitoring...</Text>
+        </View>
+      ) : isLoading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color="#007AFF" />
           <Text style={styles.loadingText}>Loading downloads...</Text>
@@ -244,13 +273,11 @@ const DownloadScreen = () => {
       ) : downloads.length > 0 ? (
         <View style={styles.downloadsContainer}>
           <View style={styles.header}>
-            <Text style={styles.headerTitle}>Downloads</Text>
-            <TouchableOpacity 
-              onPress={loadDownloads} 
-              style={styles.refreshButton}
-            >
-              <Text style={styles.refreshButtonText}>Refresh</Text>
-            </TouchableOpacity>
+            <Text style={styles.headerTitle}>Downloads ({downloads.length})</Text>
+            <View style={styles.liveIndicator}>
+              <Animated.View style={[styles.liveDot, { transform: [{ scale: pulseAnim }] }]} />
+              <Text style={styles.liveText}>Live</Text>
+            </View>
           </View>
           
           {downloads.map(renderDownloadItem)}
@@ -259,7 +286,7 @@ const DownloadScreen = () => {
         <View style={styles.emptyContainer}>
           <Text style={styles.emptyText}>No downloads available</Text>
           <Text style={styles.emptySubText}>
-            Videos you download will appear here
+            Videos you download will appear here with real-time progress updates
           </Text>
           <TouchableOpacity 
             style={styles.refreshEmptyButton}
@@ -455,6 +482,37 @@ const styles = StyleSheet.create({
   },
   refreshEmptyButtonText: {
     color: '#fff',
+    fontWeight: '600',
+  },
+  playButton: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    backgroundColor: '#4CAF50',
+    borderRadius: 4,
+  },
+  playButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  liveIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#4CAF50',
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 5,
+  },
+  liveDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#fff',
+    marginRight: 4,
+  },
+  liveText: {
+    color: '#fff',
+    fontSize: 12,
     fontWeight: '600',
   },
 });
